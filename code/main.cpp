@@ -42,6 +42,7 @@ int main(int argc, char** argv)
 {
   std::cout << "Starting" << std::endl;
 
+
   // No error handling here...
   if(argc != 2 && argc != 6) {
     std::cout << "Usage: ./program <num_field_bits> <num_branches> <field_type> <cipher_type> <zkbpp_print_result>" << std::endl;
@@ -71,14 +72,14 @@ int main(int argc, char** argv)
   uint32 cipher_type = atoi(argv[4]);
   bool print_result = (bool)(atoi(argv[5]));
 
-  uchar plaintext[value_size];
-  uchar y[value_size];
-  RAND_bytes(plaintext, value_size);
-  //write_plaintext(plaintext, value_size); // DETERMINISTIC FOR TESTING!
+  uchar sk[value_size];
+  uchar pk[value_size];
+  // RAND_bytes(plaintext, value_size);
+  // //write_plaintext(plaintext, value_size); // DETERMINISTIC FOR TESTING!
   uint32 party_size = 3;
   uint32 zkbpp_iterations = 438; // This should be 438 later
-  
-  
+
+
   //MiMCp* c = new MiMCp(party_size);
   CircuitContainer* c = new CircuitContainer();
   c->init(value_size, random_tape_size, key_size, field_bits, num_branches, field_type, party_size);
@@ -86,97 +87,142 @@ int main(int argc, char** argv)
   std::string instance_name = "(" + std::to_string(field_bits) + ", " + std::to_string(num_branches) + ", " + std::to_string(c->getCipherNumRounds()) + ")";
   std::string instance_name_sage = c->getCipherName() + "-" + instance_name;
 
-  c->directEncryption(plaintext, y);
+  c->randomizeKey();
+  c->directEncryption(sk, pk);
 
   ZKBPP* zkbpp = new ZKBPP();
   zkbpp->init(party_size, zkbpp_iterations, c, print_result);
 
-  uint32 num_runs = 50;
-  uint64 total_gensign = 0;
-  uint64 total_sign = 0;
-  uint64 total_genverify = 0;
-  uint64 total_verify = 0;
-  uint64 total_circuit_sign = 0;
-  uint64 total_circuit_verify = 0;
+  printf("%s", "sk: ");
+  zkbpp->printDataAsHex(sk, value_size, false);
+  printf("%s", "pk: ");
+  zkbpp->printDataAsHex(pk, value_size, false);
+
   Proof* p;
   bool success;
-  for(uint32 i = 0; i < num_runs; i++) {
-    //c->randomizeKey();
-    //c->directEncryption(plaintext, y);
+  uint32 data_size = (party_size * value_size) + (party_size * zkbpp->hash_size_);
 
-    p = zkbpp->sign(plaintext);
-    success = zkbpp->verify(p, plaintext, y);
-    total_gensign += zkbpp->getLastGenSignNS();
-    total_sign += zkbpp->getLastSignNS();
-    total_genverify += zkbpp->getLastGenVerifyNS();
-    total_verify += zkbpp->getLastVerifyNS();
-    total_circuit_sign += c->getLastCircuitSignNS(); // Last circuit execution of each run
-    total_circuit_verify += c->getLastCircuitVerifyNS(); // Last circuit execution of each run
-  }
+  zkbpp->trap_commit(sk);
 
-  // Testing direct function
-  uint64 min_cycles = 0xFFFFFFFF;
-  uint64 total_direct_call = 0;
-  for(uint32 i = 0; i < num_runs; i++) {
-    c->randomizeKey();
-    c->directEncryption(plaintext, y);
-    if(c->getLastDirectCallCycles() < min_cycles) min_cycles = c->getLastDirectCallCycles();
-    total_direct_call += c->getLastDirectCallNS();
-  }
+  printf("%s", "trapdoor commitment: ");
+  for (uint32 i = 0; i < zkbpp_iterations; ++i)
+	  zkbpp->printDataAsHex(zkbpp->ca->as_[i]->ys_C_hashs_, data_size, false);
 
-  // Print out information
-  float time_gensign = ((float)total_gensign / num_runs / 1000000);
-  float time_sign = ((float)total_sign / num_runs / 1000000);
-  float time_sign_total =  time_gensign + time_sign;
-  float time_genverify = ((float)total_genverify / num_runs / 1000000);
-  float time_verify = ((float)total_verify / num_runs / 1000000);
-  float time_verify_total = time_genverify + time_verify;
-  float time_circuit_sign = ((float)(total_circuit_sign) / num_runs / 1000000);
-  float time_circuit_verify = ((float)(total_circuit_verify) / num_runs / 1000000);
-  float time_circuits_sign_all = (((float)(total_circuit_sign / num_runs) / 1000000) * zkbpp_iterations);
-  float time_circuits_verify_all = (((float)(total_circuit_verify / num_runs) / 1000000) * zkbpp_iterations);
-  float time_direct_call = ((float)(total_direct_call) / num_runs / 1000000);
-  std::cout << "--- CONFIGURATION ---" << std::endl;
-  std::cout << "Number of test runs: " << num_runs << std::endl;
-  std::cout << "--- CIRCUIT ---" << std::endl;
-  std::cout << "Field type: " << ((field_type == 0) ? "Prime field" : "Binary field") << std::endl;
-  std::cout << "Field size (bits): " << field_bits << std::endl;
-  std::cout << "Value size (bytes): " << value_size << std::endl;
-  std::cout << "Key size (bytes): " << key_size << std::endl;
-  std::cout << "Number of branches: " << num_branches << std::endl;
-  std::cout << "Number of cipher rounds: " << c->getCipherNumRounds() << std::endl;
-  std::cout << "Number of cipher MUL gates: " << c->getCipherNumMulGates() << std::endl;
-  std::cout << "[Cipher] Cycles per byte: " << (min_cycles / 32) << std::endl;
-  std::cout << "[Cipher] Average time for direct call: " << time_direct_call << " ms" << std::endl;
-  std::cout << "--- TIME ---" << std::endl;
-  std::cout << "Average time for gensign: " << time_gensign << " ms" << std::endl;
-  std::cout << "Average time for sign: " << time_sign << " ms" << std::endl;
-  std::cout << "Average time for sign (total): " << time_sign_total << " ms" << std::endl;
-  std::cout << "Average time for genverify: " << time_genverify << " ms" << std::endl;
-  std::cout << "Average time for verify: " << time_verify << " ms" << std::endl;
-  std::cout << "Average time for verify (total): " << time_verify_total << " ms" << std::endl;
-  std::cout << "Average time for circuit sign: " << time_circuit_sign << " ms" << std::endl;
-  std::cout << "Average time for circuit verify: " << time_circuit_verify << " ms" << std::endl;
-  std::cout << "Average time for all circuits sign: " << time_circuits_sign_all << " ms" << std::endl;
-  std::cout << "Average time for all circuits verify: " << time_circuits_verify_all << " ms" << std::endl;
-  std::cout << "--- ZKB++ ---" << std::endl;
-  std::cout << "Number of ZKB++ iterations: " << zkbpp_iterations << std::endl;
-  std::cout << "View size: " << (c->getViewSizeBits() / 8) << " bytes (" << c->getViewSizeBits() << " bits)" << std::endl;
+  uchar *msg = NULL;
+  size_t n = 0;
+
+  printf("%s", "msg: ");
+  getline(reinterpret_cast<char **>(&msg), &n, stdin);
+
+  p = zkbpp->trap_open(msg);
+
+  printf("%s", "opening: ");
+  zkbpp->printProof(p, true);
+
+  success = zkbpp->verify_commit(p, msg, sk, pk);
+  printf("success: %d\n", success);
+
+  printf("%s", "msg: ");
+  getline(reinterpret_cast<char **>(&msg), &n, stdin);
+
+  p = zkbpp->commit(pk, msg);
+
+  printf("%s", "commitment: ");
+  for (uint32 i = 0; i < zkbpp_iterations; ++i)
+	  zkbpp->printDataAsHex(zkbpp->ca->as_[i]->ys_C_hashs_, data_size, false);
+
+  printf("%s", "opening: ");
+  zkbpp->printProof(p, true);
+
+  success = zkbpp->verify_commit(p, msg, sk, pk);
+  printf("success: %d\n", success);
+
+  // uint32 num_runs = 50;
+  // uint64 total_gensign = 0;
+  // uint64 total_sign = 0;
+  // uint64 total_genverify = 0;
+  // uint64 total_verify = 0;
+  // uint64 total_circuit_sign = 0;
+  // uint64 total_circuit_verify = 0;
+  // Proof* p;
+  // bool success;
+  // for(uint32 i = 0; i < num_runs; i++) {
+  //   //c->randomizeKey();
+  //   //c->directEncryption(plaintext, y);
+
+  //   p = zkbpp->sign(plaintext);
+  //   success = zkbpp->verify(p, plaintext, y);
+  //   total_gensign += zkbpp->getLastGenSignNS();
+  //   total_sign += zkbpp->getLastSignNS();
+  //   total_genverify += zkbpp->getLastGenVerifyNS();
+  //   total_verify += zkbpp->getLastVerifyNS();
+  //   total_circuit_sign += c->getLastCircuitSignNS(); // Last circuit execution of each run
+  //   total_circuit_verify += c->getLastCircuitVerifyNS(); // Last circuit execution of each run
+  // }
+
+  // // Testing direct function
+  // uint64 min_cycles = 0xFFFFFFFF;
+  // uint64 total_direct_call = 0;
+  // for(uint32 i = 0; i < num_runs; i++) {
+  //   c->randomizeKey();
+  //   c->directEncryption(plaintext, y);
+  //   if(c->getLastDirectCallCycles() < min_cycles) min_cycles = c->getLastDirectCallCycles();
+  //   total_direct_call += c->getLastDirectCallNS();
+  // }
+
+  // // Print out information
+  // float time_gensign = ((float)total_gensign / num_runs / 1000000);
+  // float time_sign = ((float)total_sign / num_runs / 1000000);
+  // float time_sign_total =  time_gensign + time_sign;
+  // float time_genverify = ((float)total_genverify / num_runs / 1000000);
+  // float time_verify = ((float)total_verify / num_runs / 1000000);
+  // float time_verify_total = time_genverify + time_verify;
+  // float time_circuit_sign = ((float)(total_circuit_sign) / num_runs / 1000000);
+  // float time_circuit_verify = ((float)(total_circuit_verify) / num_runs / 1000000);
+  // float time_circuits_sign_all = (((float)(total_circuit_sign / num_runs) / 1000000) * zkbpp_iterations);
+  // float time_circuits_verify_all = (((float)(total_circuit_verify / num_runs) / 1000000) * zkbpp_iterations);
+  // float time_direct_call = ((float)(total_direct_call) / num_runs / 1000000);
+  // std::cout << "--- CONFIGURATION ---" << std::endl;
+  // std::cout << "Number of test runs: " << num_runs << std::endl;
+  // std::cout << "--- CIRCUIT ---" << std::endl;
+  // std::cout << "Field type: " << ((field_type == 0) ? "Prime field" : "Binary field") << std::endl;
+  // std::cout << "Field size (bits): " << field_bits << std::endl;
+  // std::cout << "Value size (bytes): " << value_size << std::endl;
+  // std::cout << "Key size (bytes): " << key_size << std::endl;
+  // std::cout << "Number of branches: " << num_branches << std::endl;
+  // std::cout << "Number of cipher rounds: " << c->getCipherNumRounds() << std::endl;
+  // std::cout << "Number of cipher MUL gates: " << c->getCipherNumMulGates() << std::endl;
+  // std::cout << "[Cipher] Cycles per byte: " << (min_cycles / 32) << std::endl;
+  // std::cout << "[Cipher] Average time for direct call: " << time_direct_call << " ms" << std::endl;
+  // std::cout << "--- TIME ---" << std::endl;
+  // std::cout << "Average time for gensign: " << time_gensign << " ms" << std::endl;
+  // std::cout << "Average time for sign: " << time_sign << " ms" << std::endl;
+  // std::cout << "Average time for sign (total): " << time_sign_total << " ms" << std::endl;
+  // std::cout << "Average time for genverify: " << time_genverify << " ms" << std::endl;
+  // std::cout << "Average time for verify: " << time_verify << " ms" << std::endl;
+  // std::cout << "Average time for verify (total): " << time_verify_total << " ms" << std::endl;
+  // std::cout << "Average time for circuit sign: " << time_circuit_sign << " ms" << std::endl;
+  // std::cout << "Average time for circuit verify: " << time_circuit_verify << " ms" << std::endl;
+  // std::cout << "Average time for all circuits sign: " << time_circuits_sign_all << " ms" << std::endl;
+  // std::cout << "Average time for all circuits verify: " << time_circuits_verify_all << " ms" << std::endl;
+  // std::cout << "--- ZKB++ ---" << std::endl;
+  // std::cout << "Number of ZKB++ iterations: " << zkbpp_iterations << std::endl;
+  // std::cout << "View size: " << (c->getViewSizeBits() / 8) << " bytes (" << c->getViewSizeBits() << " bits)" << std::endl;
   std::cout << "Expected signature size: ~" << (zkbpp->getExpectedSignatureSizeBits() / 8 / 1024) << " KB" << std::endl;
-  if(success == true)
-    std::cout << "Result: ACCEPT" << std::endl;
-  else
-    std::cout << "Result: !!!!!!!!!! REJECT !!!!!!!!!!"  << std::endl;
+  // if(success == true)
+  //   std::cout << "Result: ACCEPT" << std::endl;
+  // else
+  //   std::cout << "Result: !!!!!!!!!! REJECT !!!!!!!!!!"  << std::endl;
 
-  // Print table for LaTeX (something like: "{{\texttt {Scheme-N-n}}} & {<number> <unit>} & {<number> <unit>} & {<number> <unit>} \\" for each instance (here for this one))
-  // | Scheme Definition | GenSign time (ms) | Sign time (ms) | GenVerify Time (ms) | Verify time (ms) | View size (bits) | Signature size (KB) |
-  //printf("{{\\texttt {%s}}} & {%.2f ms} & {%.2f ms} & {%d bits} & {\\({\\approx}\\) %d KB} \\\\\n",
-  printf("& \\(%s\\) & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%d\\) bits & \\(\\approx %d\\) KB \\\\ \\cline{2-8}\n",
-    instance_name.c_str(), time_gensign, time_sign_total, time_genverify, time_verify_total, c->getViewSizeBits(), (zkbpp->getExpectedSignatureSizeBits() / 8 / 1024));
+  // // Print table for LaTeX (something like: "{{\texttt {Scheme-N-n}}} & {<number> <unit>} & {<number> <unit>} & {<number> <unit>} \\" for each instance (here for this one))
+  // // | Scheme Definition | GenSign time (ms) | Sign time (ms) | GenVerify Time (ms) | Verify time (ms) | View size (bits) | Signature size (KB) |
+  // //printf("{{\\texttt {%s}}} & {%.2f ms} & {%.2f ms} & {%d bits} & {\\({\\approx}\\) %d KB} \\\\\n",
+  // printf("& \\(%s\\) & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%.2f\\) ms & \\(%d\\) bits & \\(\\approx %d\\) KB \\\\ \\cline{2-8}\n",
+  //   instance_name.c_str(), time_gensign, time_sign_total, time_genverify, time_verify_total, c->getViewSizeBits(), (zkbpp->getExpectedSignatureSizeBits() / 8 / 1024));
 
-  // Print data for Sage
-  printf("[\"%s\", %.2f, %.2f, %d]\n",
-    instance_name_sage.c_str(), time_sign_total, time_verify_total, (zkbpp->getExpectedSignatureSizeBits() / 8 / 1024));
+  // // Print data for Sage
+  // printf("[\"%s\", %.2f, %.2f, %d]\n",
+  //   instance_name_sage.c_str(), time_sign_total, time_verify_total, (zkbpp->getExpectedSignatureSizeBits() / 8 / 1024));
 
   // Clean up
   delete zkbpp;

@@ -171,6 +171,33 @@ void CircuitContainer::initMiMC() {
 
 }
 
+void CircuitContainer::runCommit(SignData* sign_data) {
+  // Stack storage for field values
+  //word* test = new word[this->num_feistel_branches_ * this->party_size_ * this->gate_num_words_ * 2];
+  alignas(8) word value_shares_f[this->num_feistel_branches_][this->party_size_][this->gate_num_words_];
+  alignas(8) word key_shares_f[this->num_feistel_branches_][this->party_size_][this->gate_num_words_];
+  memset(value_shares_f, 0, this->num_feistel_branches_ * this->party_size_ * this->gate_size_);
+  memset(key_shares_f, 0, this->num_feistel_branches_ * this->party_size_ * this->gate_size_);
+
+  // Prepare (should be the same routine for each circuit!)
+  //auto circuit_sign_start = std::chrono::high_resolution_clock::now();
+  this->beforeCommit(sign_data, (word*)value_shares_f, (word*)key_shares_f);
+  //auto circuit_sign_stop = std::chrono::high_resolution_clock::now();
+
+  // Run circuit
+  auto circuit_sign_start = std::chrono::high_resolution_clock::now();
+  (this->*circuit_function_)((word*)value_shares_f, (word*)key_shares_f, this->party_size_);
+  auto circuit_sign_stop = std::chrono::high_resolution_clock::now();
+  //this->last_circuit_sign_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(circuit_sign_stop - circuit_sign_start).count();
+
+  // Clean up (should be the same routine for each circuit!)
+  //auto circuit_sign_start = std::chrono::high_resolution_clock::now();
+  this->afterSign((word*)value_shares_f);
+  //auto circuit_sign_stop = std::chrono::high_resolution_clock::now();
+
+  this->last_circuit_sign_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(circuit_sign_stop - circuit_sign_start).count();
+}
+
 void CircuitContainer::runSign(uchar* x, SignData* sign_data) {
   // Stack storage for field values
   //word* test = new word[this->num_feistel_branches_ * this->party_size_ * this->gate_num_words_ * 2];
@@ -488,6 +515,64 @@ void CircuitContainer::initMatrixMPrime() {
   #endif
 }
 
+void CircuitContainer::beforeCommit(SignData* sign_data, word* value_shares_f, word* key_shares_f) {
+
+  this->sign_data_ = sign_data;
+
+  getrandom(this->value_shares_[0], this->value_size_, 0);
+  memset(this->value_shares_[1], 0x0, this->value_size_);
+  memset(this->value_shares_[2], 0x0, this->value_size_);
+
+  memset(this->key_shares_[0], 0, this->key_size_);
+  memset(this->key_shares_[1], 0, this->key_size_);
+  memcpy(this->key_shares_[0], (this->sign_data_)->random_tapes_hashs_, this->hash_size_);
+  memcpy(this->key_shares_[1], (this->sign_data_)->random_tapes_hashs_ + this->hash_size_, this->hash_size_);
+
+  // Calculate final shares for value and key
+  (this->*prepare_shares_field_sign_function_)(value_shares_f, key_shares_f);
+
+  // Write x_3 (last key share!) to SignData
+  memcpy((this->sign_data_)->x_3_, this->key_shares_[2], this->value_size_);
+
+  #ifdef VERBOSE
+  //BigIntLib::Print((word*)this->value_shares_[0], this->value_size_);
+  //BigIntLib::Print((word*)this->value_shares_[1], this->value_size_);
+  for(uint32 i = 0; i < this->party_size_; i++) {
+    std::cout << "[SIGN] Input share " << i << ": ";
+    BigIntLib::Print(this->value_shares_[i], this->value_size_);
+  }
+  #endif
+
+  #ifdef VERBOSE
+  for(uint32 i = 0; i < this->party_size_; i++) {
+    std::cout << "[SIGN] Key share " << i << ": ";
+    BigIntLib::Print(this->key_shares_[i], this->key_size_);
+  }
+  #endif
+
+  uchar* random_tapes[3];
+  random_tapes[0] = (this->sign_data_)->random_tapes_;
+  random_tapes[1] = random_tapes[0] + this->random_tape_size_;
+  random_tapes[2] = random_tapes[1] + this->random_tape_size_;
+  this->prepareRandomNumbers(random_tapes, this->party_size_);
+
+  // Function pointers
+  this->add_c_shared_function_ = &CircuitContainer::addCSharedSign;
+  this->add_shared_function_ = &CircuitContainer::addSharedSign;
+  this->sub_shared_function_ = &CircuitContainer::subSharedSign;
+  this->mul_shared_function_ = &CircuitContainer::mulSharedSign;
+  this->squ_shared_function_ = &CircuitContainer::squSharedSign;
+  // Can be made shorter with one if for first condition
+  if(BigIntLib::field_type_ == 1 && BigIntLib::field_size_bits_ == 3) this->squ_shared_experimental_function_ = &CircuitContainer::squSharedExperimental3Sign;
+  if(BigIntLib::field_type_ == 1 && BigIntLib::field_size_bits_ == 17) this->squ_shared_experimental_function_ = &CircuitContainer::squSharedExperimental17Sign;
+  if(BigIntLib::field_type_ == 1 && BigIntLib::field_size_bits_ == 33) this->squ_shared_experimental_function_ = &CircuitContainer::squSharedExperimental33Sign;
+  this->cube_shared_function_ = &CircuitContainer::cubeSharedSign;
+
+  // Reset current mul gate and current intermediate result
+  this->current_mul_gate_ = 0;
+  this->current_intermediate_result_ = 0;
+}
+
 void CircuitContainer::beforeSign(uchar* x, SignData* sign_data, word* value_shares_f, word* key_shares_f) {
 
   this->sign_data_ = sign_data;
@@ -504,7 +589,7 @@ void CircuitContainer::beforeSign(uchar* x, SignData* sign_data, word* value_sha
   memcpy(this->key_shares_[1], (this->sign_data_)->random_tapes_hashs_ + this->hash_size_, this->hash_size_);
 
   // Calculate final shares for value and key
-  (this->*prepare_shares_field_sign_function_)(x, value_shares_f, key_shares_f);
+  (this->*prepare_shares_field_sign_function_)(value_shares_f, key_shares_f);
 
   // Write x_3 (last key share!) to SignData
   memcpy((this->sign_data_)->x_3_, this->key_shares_[2], this->value_size_);
@@ -1640,7 +1725,7 @@ void CircuitContainer::copyShares(word* from_shares, word* to_shares, uint32 par
   }
 }
 
-void CircuitContainer::prepareSharesFieldSign(uchar* x, word* value_shares_f, word* key_shares_f) {
+void CircuitContainer::prepareSharesFieldSign(word* value_shares_f, word* key_shares_f) {
   word (*value_shares_f_tmp)[this->party_size_][this->gate_num_words_] = (word (*)[this->party_size_][this->gate_num_words_]) value_shares_f;
   word (*key_shares_f_tmp)[this->party_size_][this->gate_num_words_] = (word (*)[this->party_size_][this->gate_num_words_]) key_shares_f;
   uint32 offset_1;

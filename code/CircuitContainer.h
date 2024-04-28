@@ -30,6 +30,8 @@ SOFTWARE.
 #include "BigIntLib.h"
 #include <vector>
 
+#include <sys/random.h>
+
 class CircuitContainer {
 public:
   CircuitContainer();
@@ -38,6 +40,7 @@ public:
   void initCipher(uint32 cipher_type);
   void initMiMC();
   void runSign(uchar* x, SignData* sign_data);
+  void runCommit(SignData* sign_data);
   void runVerify(Proof* p, uchar* x, uchar* y, VerifyData* verify_data, uint32 iteration);
   void directEncryption(uchar* x, uchar* y); // Wrapper
   void directMiMC(uchar* x, uchar* y);
@@ -109,7 +112,7 @@ private:
   void (CircuitContainer::*squ_shared_experimental_function_)(word* a_shares, word* b_shares, word* c_shares);
   void (CircuitContainer::*cube_shared_function_)(word* a_shares, word* c_shares); // b_shares probably not needed
   void (CircuitContainer::*gen_new_subkeys_shared_function_)(word* key_shares_f, word* key_share_f_temp, uint32 num_rounds_remaining, uint32 party_size);
-  void (CircuitContainer::*prepare_shares_field_sign_function_)(uchar* x, word* value_shares_f, word* key_shares_f);
+  void (CircuitContainer::*prepare_shares_field_sign_function_)(word* value_shares_f, word* key_shares_f);
   void (CircuitContainer::*prepare_shares_field_verify_function_)(word* value_shares_f, word* key_shares_f);
   void (CircuitContainer::*output_shares_to_bytes_function_)(word* output_shares, uint32 party_size);
   void (CircuitContainer::*verify_calc_last_share_function_)(uchar* y, word* value_shares_f);
@@ -123,6 +126,7 @@ private:
   // Circuit preparation and finalization
   void initMatrixM();
   void initMatrixMPrime();
+  void beforeCommit(SignData *, word *, word *);
   void beforeSign(uchar* x, SignData* sign_data, word* value_shares_f, word* key_shares_f);
   void afterSign(word* value_shares_f);
   void beforeVerify(Proof* p, uchar* x, uchar* y, VerifyData* verify_data, uchar** key_shares, word* value_shares_f, word* key_shares_f, uint32 iteration);
@@ -157,7 +161,7 @@ private:
   void copyShares(word* from_shares, word* to_shares, uint32 party_size);
 
   // Additional calculations
-  void prepareSharesFieldSign(uchar* x, word* value_shares_f, word* key_shares_f);
+  void prepareSharesFieldSign(word* value_shares_f, word* key_shares_f);
   void prepareSharesFieldSignGeneric(uchar* x, word* value_shares_f, word* key_shares_f);
   void prepareSharesFieldVerify(word* value_shares_f, word* key_shares_f);
   void prepareSharesFieldVerifyGeneric(word* value_shares_f, word* key_shares_f);

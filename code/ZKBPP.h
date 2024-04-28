@@ -31,17 +31,27 @@ public:
   ~ZKBPP();
   void init(uint32 party_size, uint32 num_iterations, CircuitContainer* cc, bool print_result = true);
   Proof* sign(uchar* x);
+  Proof* commit(uchar *, uchar *);
+	void trap_commit(uchar *);
+	Proof *trap_open(uchar *);
+  bool verify_commit(Proof *, uchar *, uchar *, uchar *);
   bool verify(Proof* p, uchar* x, uchar* y);
+  void printDataAsHex(uchar* data, uint32 data_size, bool format);
+  void printProof(Proof* p, bool print_view);
   uint64 getLastGenSignNS();
   uint32 getLastSignNS();
   uint64 getLastGenVerifyNS();
   uint32 getLastVerifyNS();
   uint32 getExpectedSignatureSizeBits();
+  ContainerA* ca;
+  ContainerCD* commitment_;
+  uint32 hash_size_;
 private:
   uint32 party_size_;
   uint32 num_iterations_;
   CircuitContainer* circuit_;
-  ContainerCD* commitment_;
+  ContainerSignData* csd;
+	uchar *buffer_all;
 
   // Circuit values
   uint32 circuit_value_size_; // Size of x and y (assuming x_size == y_size)
@@ -50,7 +60,6 @@ private:
   uint32 circuit_num_view_gates_; // Number of gates contributing to the View
 
   // Inner size values
-  uint32 hash_size_;
   uint32 random_tape_size_;
   uint32 view_size_;
 
@@ -94,6 +103,7 @@ private:
   // Struct content
   void fillCDSign(ContainerCD* ccd, uint32 iteration, SignData* sign_data, uchar* hash_data);
   void fillCDVerify(ContainerCD* ccd, uint32 iteration, Proof* p, VerifyData* verify_data, uchar* hash_data);
+  void fillACommit(ContainerA* ca, uint32 iteration, SignData* sign_data, ContainerCD* ccd, uchar *, uchar *);
   void fillASign(ContainerA* ca, uint32 iteration, SignData* sign_data, ContainerCD* ccd);
   void fillAVerify(ContainerA* ca, uint32 iteration, Proof* p, VerifyData* verify_data, ContainerCD* ccd);
   void fillProof(Proof* p, uint32 iteration, SignData* sign_data, ContainerCD* ccd);
@@ -108,6 +118,4 @@ private:
 
   // Other
   void printView(uchar* view);
-  void printProof(Proof* p, bool print_view);
-  void printDataAsHex(uchar* data, uint32 data_size, bool format);
 };

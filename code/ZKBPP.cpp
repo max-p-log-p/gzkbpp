@@ -137,6 +137,213 @@ Proof* ZKBPP::sign(uchar* x) {
   return p;
 }
 
+Proof* ZKBPP::commit(uchar* pk, uchar *msg) {
+  auto gensign_start = std::chrono::high_resolution_clock::now();
+
+  // Maybe use alignas(8) or alignas(32) for the arrays below
+  // Create buffer for views
+  uchar* buffer_all = new uchar[this->num_iterations_ * this->party_size_ * this->view_size_ + // views
+    this->num_iterations_ * this->party_size_ * this->random_tape_size_]; // random tapes
+  //uchar sign_views_buffer[this->num_iterations_][this->party_size_][this->view_size_];
+  uchar* sign_views_buffer = buffer_all;
+  memset(sign_views_buffer, 0, this->num_iterations_ * this->party_size_ * this->view_size_);
+
+  // Create buffer for random tapes
+  //uchar random_tapes_buffer[this->num_iterations_][this->party_size_ * this->circuit_value_size_];
+  uchar* random_tapes_buffer = buffer_all + (this->num_iterations_ * this->party_size_ * this->view_size_);
+  //RAND_bytes((uchar*)random_tapes_buffer, this->num_iterations_ * this->party_size_ * this->circuit_value_size_);
+  BigIntLib::FillRandom(random_tapes_buffer, (this->circuit_)->getKey(), this->num_iterations_ * this->party_size_ * this->random_tape_size_);
+  //BigIntLib::Print(random_tapes_buffer, this->num_iterations_ * this->party_size_ * this->circuit_value_size_);
+
+  // Create data
+  uint32 k_View_size = this->random_tape_size_ + (this->circuit_num_view_gates_ * this->circuit_gate_size_);
+  ContainerSignData* csd = this->createContainerSignData(sign_views_buffer, random_tapes_buffer);
+  ContainerCD* ccd = this->createContainerCD(k_View_size, this->party_size_);
+  ContainerA* ca = this->createContainerA();
+  auto gensign_stop = std::chrono::high_resolution_clock::now();
+  this->last_gensign_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(gensign_stop - gensign_start).count();
+  auto sign_start = std::chrono::high_resolution_clock::now();
+  // For each iteration (iterations are independent from each other):
+  //#pragma omp parallel for
+  uint32 hash_data_size = this->random_tape_size_ + this->view_size_;
+  alignas(32) uchar hash_data[hash_data_size];
+  //uchar* hash_data = new uchar[hash_data_size];
+
+  // Allocate memory for the proof p, containing one b_i and one z_i for each iteration
+  Proof* p = this->createProof();
+  // Create the challenge E, being the hash value of the message
+	SHA256(p->e_, msg, this->hash_size_);
+
+  for(uint32 i = 0; i < this->num_iterations_; i++) {
+    // Call the circuit, pass SignData and let the circuit fill all Views (and the k's)
+    //this->circuit_->evaluateSign(x, x_size, csd->sds_[i]);
+    (this->circuit_->runCommit)(csd->sds_[i]);
+    // Add to CD and A
+    this->fillCDSign(ccd, i, csd->sds_[i], hash_data);
+    this->fillACommit(ca, i, csd->sds_[i], ccd, pk, p->e_);
+  }
+	this->ca = ca;
+  //delete[] hash_data;
+  //auto sign_stop = std::chrono::high_resolution_clock::now();
+
+  // Commitment
+  this->commitment_ = ccd;
+  // For each iteration, the hash value E should create an e_i in {0, 1, 2}
+  // For each iteration (iterations are independent from each other):
+  for(uint32 i = 0; i < this->num_iterations_; i++) {
+    // 1. Create b_i = (y_e+2, C_e+2), where y and C are this iteration's values and e is in {0, 1, 2} according to the challenge (hash value) E
+    // 2. Create z_i for this iteration and use this iteration's View, k values and (if e = 2) x_3
+    // Remarks: SignData* from this iteration still contains everything needed for z_i (all views, all random tapes and x_3) so according to e_i, move correct pointers into new z_i and delete others from SignData's memory (e.g. two unneeded views for each iteration)
+    this->fillProof(p, i, csd->sds_[i], ccd);
+  }
+
+  auto sign_stop = std::chrono::high_resolution_clock::now();
+  this->last_sign_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(sign_stop - sign_start).count();
+
+  // Delete unneeded resources
+  this->destroyContainerSignData(csd);
+  // this->destroyContainerA(ca);
+
+  delete[] buffer_all;
+  return p;
+}
+
+void ZKBPP::trap_commit(uchar* sk) {
+  auto gensign_start = std::chrono::high_resolution_clock::now();
+
+  // Maybe use alignas(8) or alignas(32) for the arrays below
+  // Create buffer for views
+  uchar* buffer_all = new uchar[this->num_iterations_ * this->party_size_ * this->view_size_ + // views
+    this->num_iterations_ * this->party_size_ * this->random_tape_size_]; // random tapes
+	this->buffer_all = buffer_all;
+  //uchar sign_views_buffer[this->num_iterations_][this->party_size_][this->view_size_];
+  uchar* sign_views_buffer = buffer_all;
+  memset(sign_views_buffer, 0, this->num_iterations_ * this->party_size_ * this->view_size_);
+
+  // Create buffer for random tapes
+  //uchar random_tapes_buffer[this->num_iterations_][this->party_size_ * this->circuit_value_size_];
+  uchar* random_tapes_buffer = buffer_all + (this->num_iterations_ * this->party_size_ * this->view_size_);
+  //RAND_bytes((uchar*)random_tapes_buffer, this->num_iterations_ * this->party_size_ * this->circuit_value_size_);
+  BigIntLib::FillRandom(random_tapes_buffer, (this->circuit_)->getKey(), this->num_iterations_ * this->party_size_ * this->random_tape_size_);
+  //BigIntLib::Print(random_tapes_buffer, this->num_iterations_ * this->party_size_ * this->circuit_value_size_);
+
+  // Create data
+  uint32 k_View_size = this->random_tape_size_ + (this->circuit_num_view_gates_ * this->circuit_gate_size_);
+  ContainerSignData* csd = this->createContainerSignData(sign_views_buffer, random_tapes_buffer);
+  ContainerCD* ccd = this->createContainerCD(k_View_size, this->party_size_);
+	this->csd = csd;
+  ContainerA* ca = this->createContainerA();
+  auto gensign_stop = std::chrono::high_resolution_clock::now();
+  this->last_gensign_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(gensign_stop - gensign_start).count();
+  auto sign_start = std::chrono::high_resolution_clock::now();
+  // For each iteration (iterations are independent from each other):
+  //#pragma omp parallel for
+  uint32 hash_data_size = this->random_tape_size_ + this->view_size_;
+  alignas(32) uchar hash_data[hash_data_size];
+  //uchar* hash_data = new uchar[hash_data_size];
+  for(uint32 i = 0; i < this->num_iterations_; i++) {
+    // Call the circuit, pass SignData and let the circuit fill all Views (and the k's)
+    //this->circuit_->evaluateSign(x, x_size, csd->sds_[i]);
+    (this->circuit_->runSign)(sk, this->csd->sds_[i]);
+    // Add to CD and A
+    this->fillCDSign(ccd, i, this->csd->sds_[i], hash_data);
+    this->fillASign(ca, i, csd->sds_[i], ccd);
+  }
+  //delete[] hash_data;
+  //auto sign_stop = std::chrono::high_resolution_clock::now();
+	this->ca = ca;
+
+  // Commitment
+  this->commitment_ = ccd;
+}
+
+Proof *ZKBPP::trap_open(uchar *msg) {
+  // Allocate memory for the proof p, containing one b_i and one z_i for each iteration
+  Proof* p = this->createProof();
+  // Open to msg
+	SHA256(p->e_, msg, this->hash_size_);
+  // For each iteration, the hash value E should create an e_i in {0, 1, 2}
+  // For each iteration (iterations are independent from each other):
+  for(uint32 i = 0; i < this->num_iterations_; i++) {
+    // 1. Create b_i = (y_e+2, C_e+2), where y and C are this iteration's values and e is in {0, 1, 2} according to the challenge (hash value) E
+    // 2. Create z_i for this iteration and use this iteration's View, k values and (if e = 2) x_3
+    // Remarks: SignData* from this iteration still contains everything needed for z_i (all views, all random tapes and x_3) so according to e_i, move correct pointers into new z_i and delete others from SignData's memory (e.g. two unneeded views for each iteration)
+    this->fillProof(p, i, this->csd->sds_[i], this->commitment_);
+  }
+
+  auto sign_stop = std::chrono::high_resolution_clock::now();
+
+  // Delete unneeded resources
+  this->destroyContainerSignData(this->csd);
+  this->destroyContainerA(this->ca);
+
+  delete[] this->buffer_all;
+  return p;
+}
+
+bool ZKBPP::verify_commit(Proof* p, uchar *msg, uchar *x, uchar* y) {
+
+  //this->printProof(p, false);
+  auto genverify_start = std::chrono::high_resolution_clock::now();
+
+  // Create buffer for views
+  uchar verify_views_buffer[this->num_iterations_][this->view_size_];
+  memset(verify_views_buffer, 0, this->num_iterations_ * this->view_size_);
+
+  bool ret_val;
+  uint32 k_View_size = this->random_tape_size_ + (this->circuit_num_view_gates_ * this->circuit_gate_size_);
+  ContainerVerifyData* cvd = this->createContainerVerifyData(verify_views_buffer);
+  ContainerCD* ccd_verify = this->createContainerCD(k_View_size, this->party_size_ - 1);
+  ContainerA* ca_verify = this->createContainerA();
+  auto genverify_stop = std::chrono::high_resolution_clock::now();
+  this->last_genverify_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(genverify_stop - genverify_start).count();
+  auto verify_start = std::chrono::high_resolution_clock::now();
+  // For each iteration (iterations are independent from each other):
+  uint32 hash_data_size = this->random_tape_size_ + this->view_size_;
+  alignas(32) uchar hash_data[hash_data_size];
+  //uchar* hash_data = new uchar[hash_data_size];
+  //#pragma omp parallel for
+	puts("test");
+  for(uint32 i = 0; i < this->num_iterations_; i++) {
+    // Call the circuit, pass VerifyData and let the circuit fill the chosen View
+    //this->circuit_->evaluateVerify(p, y, cvd->vds_[i], i); // Maybe better to pass only relevant z_i and not the entire p
+    (this->circuit_->runVerify)(p, x, y, cvd->vds_[i], i);
+    // Add to CD and A
+    this->fillCDVerify(ccd_verify, i, p, cvd->vds_[i], hash_data);
+    this->fillAVerify(ca_verify, i, p, cvd->vds_[i], ccd_verify);
+  }
+  //delete[] hash_data;
+
+  // Create the callenge E, compare with challenge contained in proof
+  uchar* challenge_prime = new uchar[this->hash_size_];
+	SHA256(challenge_prime, msg, this->hash_size_);
+  // this->buildChallengeHash(challenge_prime, ca_verify);
+  if(this->print_result_ == true) {
+    std::cout << "[ZKBPP] challenge: " << std::endl;
+    this->printDataAsHex(p->e_, this->hash_size_, true);
+    std::cout << "[ZKBPP] challenge': " << std::endl;
+    this->printDataAsHex(challenge_prime, this->hash_size_, true);
+  }
+  uint32 result = memcmp(p->e_, challenge_prime, this->hash_size_);
+  if(result == 0)
+    ret_val = true;
+  else
+    ret_val = false;
+
+  auto verify_stop = std::chrono::high_resolution_clock::now();
+  this->last_verify_time_ = std::chrono::duration_cast<std::chrono::nanoseconds>(verify_stop - verify_start).count();
+
+  // Clean up
+  this->destroyContainerVerifyData(cvd);
+  this->destroyContainerCD(ccd_verify, this->party_size_ - 1);
+  this->destroyContainerA(ca_verify);
+  // delete[] challenge_prime;
+  this->destroyContainerCD(this->commitment_, this->party_size_);
+  this->destroyProof(p);
+
+  return ret_val;
+}
+
 bool ZKBPP::verify(Proof* p, uchar* x, uchar* y) {
 
   //this->printProof(p, false);
@@ -531,6 +738,21 @@ void ZKBPP::fillCDVerify(ContainerCD* ccd, uint32 iteration, Proof* p, VerifyDat
 }
 
 // fills a_i = [y_1, C_1, y_2, C_2, y_3, C_3]_i
+void ZKBPP::fillACommit(ContainerA* ca, uint32 iteration, SignData* sign_data, ContainerCD* ccd, uchar *pk, uchar *challenge) {
+	uint32 e = challenge[iteration % this->hash_size_] % this->party_size_;
+  uint32 offset = 0;
+  for(uint32 i = 0; i < this->party_size_; i++) {
+		if (i == ((e + 2) % this->party_size_))
+			for (uint32 i2 = 0; i2 < this->circuit_value_size_; ++i2)
+				sign_data->y_shares_[i * this->circuit_value_size_ + i2] ^= pk[i2];
+    memcpy(ca->as_[iteration]->ys_C_hashs_ + offset, sign_data->y_shares_ + (i * this->circuit_value_size_), this->circuit_value_size_);
+    offset += this->circuit_value_size_;
+    memcpy(ca->as_[iteration]->ys_C_hashs_ + offset, (ccd->Cs_[i][iteration])->H_k_View_, this->hash_size_); // C value
+    offset += this->hash_size_;
+  }
+}
+
+// fills a_i = [y_1, C_1, y_2, C_2, y_3, C_3]_i
 void ZKBPP::fillASign(ContainerA* ca, uint32 iteration, SignData* sign_data, ContainerCD* ccd) {
   uint32 offset = 0;
   for(uint32 i = 0; i < this->party_size_; i++) {
@@ -667,8 +889,10 @@ void ZKBPP::printProof(Proof* p, bool print_view) {
     this->printDataAsHex(p->zs_[i]->k_1_, this->random_tape_size_, format);
     std::cout << "(z) k_e+1:" << std::endl;
     this->printDataAsHex(p->zs_[i]->k_2_, this->random_tape_size_, format);
-    std::cout << "(z) x_3:" << std::endl;
-    this->printDataAsHex(p->zs_[i]->x_3_, this->circuit_value_size_, format);
+		if (p->e_[i % this->hash_size_] % this->party_size_ != 0) {
+		  std::cout << "(z) x_3:" << std::endl;
+		  this->printDataAsHex(p->zs_[i]->x_3_, this->circuit_value_size_, format);
+    }
     if(print_view == true) {
       std::cout << "(z) View_e+1" << std::endl;
       this->printView(p->zs_[i]->view_);
